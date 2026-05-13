@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# ChromaDB / vector DB
+chroma_db/
+*.sqlite3
+
+
+zarr_data/image_resources/
+
+# Environment
+.env

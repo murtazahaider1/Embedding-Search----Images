@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zarr — Catalog Matcher</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --ink:    #0f0d0b;
+      --paper:  #f5f0e8;
+      --warm:   #e8dfd0;
+      --accent: #b5451b;
+      --muted:  #7a7068;
+      --border: #c8bfb0;
+      --card:   #faf7f2;
+      --r:      2px;
+    }
+
+    body {
+      background: var(--paper);
+      color: var(--ink);
+      font-family: 'DM Mono', monospace;
+      font-weight: 300;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 1.25rem 2rem;
+      display: flex;
+      align-items: baseline;
+      gap: 1rem;
+    }
+    header h1 {
+      font-family: 'Cormorant Garamond', serif;
+      font-weight: 300;
+      font-size: 1.6rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    header span { font-size: 0.62rem; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; }
+
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      min-height: calc(100vh - 61px);
+    }
+
+    /* ── Left ── */
+    .left {
+      border-right: 1px solid var(--border);
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .label {
+      font-size: 0.58rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+
+    #drop {
+      border: 1px dashed var(--border);
+      background: var(--card);
+      border-radius: var(--r);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      padding: 2rem;
+      text-align: center;
+      min-height: 260px;
+      overflow: hidden;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    #drop:hover, #drop.over { border-color: var(--accent); background: #fdf8f4; }
+    #drop.filled { padding: 0; border-style: solid; border-color: var(--border); }
+    #drop svg { opacity: 0.25; }
+    .hint { font-size: 0.7rem; color: var(--muted); line-height: 1.7; }
+    .hint strong { display: block; color: var(--ink); font-weight: 400; margin-bottom: 0.2rem; font-size: 0.78rem; }
+    #preview { width: 100%; max-height: 320px; object-fit: cover; display: none; border-radius: var(--r); }
+    #drop.filled #preview { display: block; }
+    #drop.filled svg, #drop.filled .hint { display: none; }
+    #file { display: none; }
+
+    button {
+      border: none;
+      padding: 0.85rem 1.5rem;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      cursor: pointer;
+      border-radius: var(--r);
+      background: var(--ink);
+      color: var(--paper);
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      transition: background 0.2s;
+    }
+    button:hover:not(:disabled) { background: var(--accent); }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .spinner {
+      width: 13px; height: 13px;
+      border: 2px solid rgba(255,255,255,0.25);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: none;
+    }
+    button.loading .spinner { display: block; }
+    button.loading .txt { display: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #status { font-size: 0.63rem; color: var(--muted); min-height: 1rem; }
+    #status.err { color: var(--accent); }
+
+    /* ── Right ── */
+    .right { padding: 2rem; overflow-y: auto; }
+
+    #empty {
+      height: 100%;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 0.75rem; opacity: 0.28;
+    }
+    #empty p { font-size: 0.68rem; letter-spacing: 0.12em; text-transform: uppercase; }
+
+    #results { display: none; }
+
+    /* ── Item section ── */
+    .item-block { margin-bottom: 2.75rem; }
+
+    .item-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.7rem;
+      margin-bottom: 1.25rem;
+      flex-wrap: wrap;
+    }
+    .item-header h2 {
+      font-family: 'Cormorant Garamond', serif;
+      font-weight: 300;
+      font-size: 1.25rem;
+    }
+    .pills { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-left: auto; }
+    .pill {
+      font-size: 0.56rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.18rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 1px;
+      color: var(--muted);
+    }
+    .pill.hi { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+    /* ── No match ── */
+    .no-match {
+      padding: 1.5rem;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      font-size: 0.68rem;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-align: center;
+    }
+
+    /* ── Product grid ── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+      gap: 1rem;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
+      text-decoration: none;
+      color: inherit;
+      display: flex;
+      flex-direction: column;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      animation: up 0.3s ease both;
+    }
+    .card:hover { border-color: var(--ink); box-shadow: 0 4px 18px rgba(0,0,0,0.08); }
+    @keyframes up { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:none; } }
+    .card:nth-child(2) { animation-delay:.05s; }
+    .card:nth-child(3) { animation-delay:.1s; }
+    .card:nth-child(4) { animation-delay:.15s; }
+    .card:nth-child(5) { animation-delay:.2s; }
+
+    .img-wrap {
+      aspect-ratio: 3/4;
+      background: var(--warm);
+      overflow: hidden;
+      position: relative;
+    }
+    .img-wrap img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      transition: transform 0.4s ease;
+    }
+    .card:hover .img-wrap img { transform: scale(1.05); }
+
+    .no-img {
+      width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center; opacity: 0.2;
+    }
+
+    .badge {
+      position: absolute;
+      top: 0.45rem; right: 0.45rem;
+      background: rgba(15,13,11,0.72);
+      color: #fff;
+      font-size: 0.52rem;
+      letter-spacing: 0.07em;
+      padding: 0.18rem 0.42rem;
+      border-radius: 1px;
+    }
+
+    .info {
+      padding: 0.7rem 0.8rem;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .prod-title {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 0.95rem;
+      font-weight: 400;
+      line-height: 1.3;
+    }
+    .prod-meta {
+      font-size: 0.56rem;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+      text-transform: capitalize;
+      margin-top: auto;
+    }
+    .prod-price { font-size: 0.7rem; font-weight: 400; margin-top: 0.2rem; }
+
+    /* colour dot in pill */
+    .dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      border: 1px solid rgba(0,0,0,0.12);
+      vertical-align: middle;
+      margin-right: 3px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Zarr</h1>
+  <span>Catalog Matcher</span>
+</header>
+
+<main>
+  <div class="left">
+    <div>
+      <p class="label">Upload Image</p>
+      <div id="drop">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <circle cx="8.5" cy="8.5" r="1.5"/>
+          <polyline points="21 15 16 10 5 21"/>
+        </svg>
+        <div class="hint">
+          <strong>Drop image here</strong>
+          or click to browse<br/>JPEG · PNG · WebP
+        </div>
+        <img id="preview" alt="" />
+      </div>
+      <input type="file" id="file" accept="image/jpeg,image/png,image/webp" />
+    </div>
+
+    <button id="btn" disabled>
+      <div class="spinner"></div>
+      <span class="txt">Find in Catalog</span>
+    </button>
+
+    <p id="status"></p>
+  </div>
+
+  <div class="right">
+    <div id="empty">
+      <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="0.75">
+        <circle cx="11" cy="11" r="8"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <p>Upload an image to find matches</p>
+    </div>
+    <div id="results"></div>
+  </div>
+</main>
+
+<script>
+  const drop    = document.getElementById('drop');
+  const fileIn  = document.getElementById('file');
+  const preview = document.getElementById('preview');
+  const btn     = document.getElementById('btn');
+  const status  = document.getElementById('status');
+  const empty   = document.getElementById('empty');
+  const results = document.getElementById('results');
+
+  const COLOUR_CSS = {
+    "black":"#111","white":"#f5f5f5","light grey":"#c0bdb8","dark grey":"#555",
+    "navy blue":"#1a2744","royal blue":"#2952a3","sky blue":"#6aafd6","light blue":"#a8d4ed",
+    "dark blue":"#0a1a3a","blue":"#2060c0","red":"#c0302a","burgundy":"#6e1c2a",
+    "coral":"#e8725a","salmon":"#e89080","hot pink":"#e0356e","light pink":"#f0b8c8",
+    "pink":"#e8a0b8","orange":"#d96020","yellow":"#ddb830","forest green":"#2d5a2d",
+    "olive green":"#6b7a30","mint green":"#7ecfb4","green":"#2d8a2d","brown":"#7a4a28",
+    "tan":"#b8915c","camel":"#c49a50","beige":"#d8c8a8","cream":"#eee8d8",
+    "purple":"#6a3a8a","lavender":"#b0a0d0","grey":"#909090","multicolor":"linear-gradient(135deg,#e74c3c,#f39c12,#2ecc71,#3498db)",
+  };
+
+  let file = null;
+
+  function setFile(f) {
+    if (!f || !f.type.startsWith('image/')) { setStatus('Please select a valid image.', true); return; }
+    file           = f;
+    preview.src    = URL.createObjectURL(f);
+    drop.classList.add('filled');
+    btn.disabled   = false;
+    setStatus('');
+    clear();
+  }
+
+  drop.addEventListener('click', () => fileIn.click());
+  fileIn.addEventListener('change', () => { if (fileIn.files[0]) setFile(fileIn.files[0]); });
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', e => {
+    e.preventDefault(); drop.classList.remove('over');
+    if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+  });
+
+  btn.addEventListener('click', async () => {
+    if (!file) return;
+    btn.classList.add('loading');
+    btn.disabled = true;
+    setStatus('Detecting clothing and searching catalog…');
+    clear();
+
+    const form = new FormData();
+    form.append('file', file);
+
+    try {
+      const res  = await fetch('/match', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Search failed.');
+      render(data);
+      setStatus('');
+    } catch (e) {
+      setStatus(e.message, true);
+    } finally {
+      btn.classList.remove('loading');
+      btn.disabled = false;
+    }
+  });
+
+  function setStatus(msg, err = false) {
+    status.textContent = msg;
+    status.className   = err ? 'err' : '';
+  }
+
+  function clear() {
+    results.innerHTML = '';
+    results.style.display = 'none';
+    empty.style.display   = 'flex';
+  }
+
+  function colourDot(colour) {
+    const css = COLOUR_CSS[colour];
+    if (!css) return '';
+    const style = css.startsWith('linear') ? `background:${css}` : `background-color:${css}`;
+    return `<span class="dot" style="${style}"></span>`;
+  }
+
+  function render(data) {
+    empty.style.display   = 'none';
+    results.style.display = 'block';
+    results.innerHTML     = '';
+
+    data.items.forEach(item => {
+      const block  = document.createElement('div');
+      block.className = 'item-block';
+
+      const a    = item.detected_attrs;
+      const cDot = colourDot(a.colour);
+
+      block.innerHTML = `
+        <div class="item-header">
+          <h2>Item #${item.item_id}</h2>
+          <div class="pills">
+            <span class="pill hi">${a.type || item.detected_class}</span>
+            <span class="pill">${cDot}${a.colour}</span>
+            <span class="pill">${a.gender}</span>
+            <span class="pill">${a.fit}</span>
+          </div>
+        </div>
+      `;
+
+      if (!item.found || !item.matches.length) {
+        block.innerHTML += `<div class="no-match">No matching items found in the Zarr catalog.</div>`;
+      } else {
+        const grid = document.createElement('div');
+        grid.className = 'grid';
+
+        item.matches.forEach((m, j) => {
+          const card      = document.createElement('a');
+          card.className  = 'card';
+          card.href       = m.url;
+          card.target     = '_blank';
+          card.rel        = 'noopener';
+          card.style.animationDelay = `${j * 0.06}s`;
+
+          const pct    = Math.round(m.similarity * 100);
+          const imgSrc = m.served_image || m.image_url || '';
+          const imgHtml = imgSrc
+            ? `<img src="${imgSrc}" alt="${m.title}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=no-img><svg width=28 height=28 viewBox=\\'0 0 24 24\\' fill=none stroke=currentColor stroke-width=1><rect x=3 y=3 width=18 height=18 rx=2/><circle cx=8.5 cy=8.5 r=1.5/><polyline points=\\'21 15 16 10 5 21\\'/></svg></div>'">`
+            : `<div class="no-img"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>`;
+
+          const meta  = [m.colour, m.fit, m.style].filter(Boolean).join(' · ');
+          const price = m.price ? `<div class="prod-price">PKR ${Number(m.price).toLocaleString()}</div>` : '';
+
+          card.innerHTML = `
+            <div class="img-wrap">
+              ${imgHtml}
+              <span class="badge">${pct}% match</span>
+            </div>
+            <div class="info">
+              <div class="prod-title">${m.title}</div>
+              <div class="prod-meta">${meta}</div>
+              ${price}
+            </div>
+          `;
+          grid.appendChild(card);
+        });
+
+        block.appendChild(grid);
+      }
+
+      results.appendChild(block);
+    });
+  }
+</script>
+</body>
+</html>
