@@ -21,6 +21,7 @@ from extract_metadata import (
     TYPE_MAP, COLOUR_MAP, FIT_MAP, STYLE_MAP, GENDER_MAP
 )
 from search import load_db, search as chroma_search
+from product_store import ProductStore
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -58,7 +59,7 @@ clip.eval()
 weights_path = hf_hub_download(repo_id="Bingsu/adetailer", filename="deepfashion2_yolov8s-seg.pt")
 yolo         = YOLO(weights_path)
 
-collection = load_db()
+collection, store = load_db()
 
 models = {"device": device, "processor": processor, "clip_model": clip}
 
@@ -73,11 +74,24 @@ if img_dir.exists():
 
 # ── Image helpers ─────────────────────────────────────────────────────────────
 
+MAX_INPUT_HEIGHT = 500   # input image is capped at this height before detection
+
 def fix_orientation(img):
     try:
         return ImageOps.exif_transpose(img)
     except Exception:
         return img
+
+
+def resize_input(img: Image.Image, max_height: int = MAX_INPUT_HEIGHT) -> Image.Image:
+    """Downscale image so height <= max_height, preserving aspect ratio.
+    Images already smaller than max_height are returned unchanged."""
+    w, h = img.size
+    if h <= max_height:
+        return img
+    new_h = max_height
+    new_w = int(w * (max_height / h))
+    return img.resize((new_w, new_h), Image.LANCZOS)
 
 
 def pad_square(crop, size=336):
@@ -169,6 +183,35 @@ def clip_classify(crop, candidates):
 
 # ── Detection ─────────────────────────────────────────────────────────────────
 
+def iou(a: list, b: list) -> float:
+    """Intersection over Union for two [x1,y1,x2,y2] boxes."""
+    ix1 = max(a[0], b[0]); iy1 = max(a[1], b[1])
+    ix2 = min(a[2], b[2]); iy2 = min(a[3], b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    area_a = (a[2]-a[0]) * (a[3]-a[1])
+    area_b = (b[2]-b[0]) * (b[3]-b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def deduplicate_regions(regions: list, iou_threshold: float = 0.30) -> list:
+    """
+    Remove duplicate detections caused by YOLO detecting the same garment
+    multiple times with slightly different bounding boxes or class labels.
+    Keeps the first detection when two boxes overlap above iou_threshold.
+    """
+    kept = []
+    for r in regions:
+        duplicate = False
+        for k in kept:
+            if iou(r["bbox"], k["bbox"]) > iou_threshold:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(r)
+    return kept
+
+
 def detect_and_classify(image: Image.Image) -> list[dict]:
     W, H    = image.size
     arr     = np.array(image)
@@ -202,6 +245,9 @@ def detect_and_classify(image: Image.Image) -> list[dict]:
     if not regions:
         regions = [{"df2_class": "unknown", "bbox": [0,0,W,H], "crop": image, "mask": None}]
 
+    # Remove overlapping duplicate detections before classifying
+    regions = deduplicate_regions(regions)
+
     type_labels   = [t[0] for t in TYPE_MAP]
     gender_labels = list(GENDER_MAP.keys()) + ["unisex"]
     fit_labels    = [f[0] for f in FIT_MAP]
@@ -215,6 +261,9 @@ def detect_and_classify(image: Image.Image) -> list[dict]:
         gender, gender_conf = clip_classify(crop, gender_labels)
         fit,    fit_conf    = clip_classify(crop, fit_labels)
 
+        # Log detected attributes to terminal, not shown on frontend
+        print(f"  Item #{i+1}: class={r['df2_class']} | type={ctype} | colour={colour} | gender={gender} | fit={fit}")
+
         items.append({
             "item_id":        i + 1,
             "detected_class": r["df2_class"],
@@ -223,7 +272,7 @@ def detect_and_classify(image: Image.Image) -> list[dict]:
             "colour":         colour,
             "gender":         gender,
             "fit":            fit,
-            "_crop":          crop,   # PIL Image, not serialised
+            "_crop":          crop,
         })
 
     return items
@@ -250,6 +299,7 @@ async def match(file: UploadFile = File(...)):
         raise HTTPException(400, "Empty file.")
 
     image = fix_orientation(Image.open(io.BytesIO(data)).convert("RGB"))
+    image = resize_input(image)
     items = detect_and_classify(image)
 
     output = []
@@ -265,6 +315,7 @@ async def match(file: UploadFile = File(...)):
             attrs      = attrs,
             crop       = item["_crop"],
             collection = collection,
+            store      = store,
             processor  = processor,
             model      = clip,
             device     = device,

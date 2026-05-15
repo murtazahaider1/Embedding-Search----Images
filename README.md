@@ -1,4 +1,5 @@
 An Image to Product Embeddings search.
+The embedding images are resized first before building the embeddings (done automatically in the build_index.py script), and the input image is also resized similarly.
 
 To run, first install the required libraries:
 pip install -r requirements.txt

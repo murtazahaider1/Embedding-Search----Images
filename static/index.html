@@ -163,17 +163,7 @@
       font-weight: 300;
       font-size: 1.25rem;
     }
-    .pills { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-left: auto; }
-    .pill {
-      font-size: 0.56rem;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      padding: 0.18rem 0.5rem;
-      border: 1px solid var(--border);
-      border-radius: 1px;
-      color: var(--muted);
-    }
-    .pill.hi { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
 
     /* ── No match ── */
     .no-match {
@@ -255,24 +245,10 @@
       font-weight: 400;
       line-height: 1.3;
     }
-    .prod-meta {
-      font-size: 0.56rem;
-      color: var(--muted);
-      letter-spacing: 0.05em;
-      text-transform: capitalize;
-      margin-top: auto;
-    }
+
     .prod-price { font-size: 0.7rem; font-weight: 400; margin-top: 0.2rem; }
 
-    /* colour dot in pill */
-    .dot {
-      display: inline-block;
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      border: 1px solid rgba(0,0,0,0.12);
-      vertical-align: middle;
-      margin-right: 3px;
-    }
+
   </style>
 </head>
 <body>
@@ -397,13 +373,6 @@
     empty.style.display   = 'flex';
   }
 
-  function colourDot(colour) {
-    const css = COLOUR_CSS[colour];
-    if (!css) return '';
-    const style = css.startsWith('linear') ? `background:${css}` : `background-color:${css}`;
-    return `<span class="dot" style="${style}"></span>`;
-  }
-
   function render(data) {
     empty.style.display   = 'none';
     results.style.display = 'block';
@@ -413,18 +382,9 @@
       const block  = document.createElement('div');
       block.className = 'item-block';
 
-      const a    = item.detected_attrs;
-      const cDot = colourDot(a.colour);
-
       block.innerHTML = `
         <div class="item-header">
           <h2>Item #${item.item_id}</h2>
-          <div class="pills">
-            <span class="pill hi">${a.type || item.detected_class}</span>
-            <span class="pill">${cDot}${a.colour}</span>
-            <span class="pill">${a.gender}</span>
-            <span class="pill">${a.fit}</span>
-          </div>
         </div>
       `;
 
@@ -448,7 +408,6 @@
             ? `<img src="${imgSrc}" alt="${m.title}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=no-img><svg width=28 height=28 viewBox=\\'0 0 24 24\\' fill=none stroke=currentColor stroke-width=1><rect x=3 y=3 width=18 height=18 rx=2/><circle cx=8.5 cy=8.5 r=1.5/><polyline points=\\'21 15 16 10 5 21\\'/></svg></div>'">`
             : `<div class="no-img"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>`;
 
-          const meta  = [m.colour, m.fit, m.style].filter(Boolean).join(' · ');
           const price = m.price ? `<div class="prod-price">PKR ${Number(m.price).toLocaleString()}</div>` : '';
 
           card.innerHTML = `
@@ -458,7 +417,6 @@
             </div>
             <div class="info">
               <div class="prod-title">${m.title}</div>
-              <div class="prod-meta">${meta}</div>
               ${price}
             </div>
           `;
