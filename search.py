@@ -19,7 +19,7 @@ from product_store import ProductStore
 
 CHROMA_DIR        = "zarr_chroma_db"
 COLLECTION_NAME   = "zarr_catalog"
-SIMILARITY_CUTOFF = 0.20
+SIMILARITY_CUTOFF = 0.75
 TOP_K             = 5
 PREFETCH_K        = 30
 
