@@ -25,4 +25,4 @@ zarr_chroma_db
 zarr_products.db
 
 # Environment
-.env
+.envzarr_products.db
