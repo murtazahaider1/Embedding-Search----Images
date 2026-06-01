@@ -22,5 +22,7 @@ chroma_db/
 
 zarr_chroma_db
 
+zarr_products.db
+
 # Environment
 .env
