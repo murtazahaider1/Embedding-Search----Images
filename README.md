@@ -9,3 +9,5 @@ Embeddings will only be created once or needed when a new product is added.
 
 To run the frontend on a local server, use uvicorn as below:
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload (Change as needed)
+
+refresh_catalog.py file can be used to schedule build_index as needed based on changes
