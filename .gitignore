@@ -20,7 +20,7 @@ chroma_db/
 *.sqlite3
 
 
-zarr_data/image_resources/
+zarr_chroma_db
 
 # Environment
 .env

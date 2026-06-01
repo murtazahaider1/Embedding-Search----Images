@@ -17,9 +17,7 @@ from transformers import AutoProcessor, AutoModelForZeroShotImageClassification
 from ultralytics import YOLO
 from huggingface_hub import hf_hub_download
 
-from extract_metadata import (
-    TYPE_MAP, COLOUR_MAP, FIT_MAP, STYLE_MAP, GENDER_MAP
-)
+from extract_metadata import COLOUR_MAP   # used by nearest_colour fallback
 from search import load_db, search as chroma_search
 from product_store import ProductStore
 
@@ -28,6 +26,25 @@ from product_store import ProductStore
 IMAGE_DIR        = "zarr_data/image_resources"
 DETECT_CONF      = 0.30
 MIN_DETECTION_PX = 30
+MIN_CROP_AREA_RATIO = 0.04   # crop must be at least 4% of image area to be a real garment
+MAX_HEAD_ZONE_RATIO = 0.25   # detections entirely within top 25% of image are likely head/hair crops
+
+# ── Gender classifier ────────────────────────────────────────────────────────
+# Two polar-opposite prompts designed for Fashion-CLIP's training distribution.
+# Using comma-separated fashion keywords rather than natural language gives
+# more reliable discrimination — especially for Eastern/Pakistani garments.
+# Confidence threshold: if below GENDER_CONF_MIN, we default to "unisex"
+# so the search filter stays open rather than filtering the wrong gender.
+GENDER_CONF_MIN = 0.62   # below this → unisex (safe fallback)
+
+GENDER_LABELS = [
+    "women clothing ladies fashion kurti shalwar kameez dupatta suit dress",
+    "men clothing menswear kurta shirt trousers shalwar sherwani",
+]
+GENDER_LABEL_MAP = {
+    GENDER_LABELS[0]: "women",
+    GENDER_LABELS[1]: "men",
+}
 
 COLOUR_CSS = {
     "black": "#111", "white": "#f5f5f5", "light grey": "#c0bdb8",
@@ -74,7 +91,7 @@ if img_dir.exists():
 
 # ── Image helpers ─────────────────────────────────────────────────────────────
 
-MAX_INPUT_HEIGHT = 500   # input image is capped at this height before detection
+MAX_INPUT_HEIGHT = 224   # input image is capped at this height before detection
 
 def fix_orientation(img):
     try:
@@ -181,6 +198,83 @@ def clip_classify(crop, candidates):
     return candidates[best], round(float(probs[best]), 4)
 
 
+# ── Clothing presence check ───────────────────────────────────────────────────
+
+# Positive labels — things that count as "clothing present"
+_CLOTHING_PRESENT = [
+    "a person wearing clothes",
+    "a clothing item or garment",
+    "a shirt, top, or jacket",
+    "trousers, jeans, or a skirt",
+    "a dress or traditional outfit",
+    "a shalwar kameez or kurta",
+    "a saree or ethnic outfit",
+    "shoes or footwear",
+    "a bag or accessory",
+]
+
+# Negative labels — things that are clearly not clothing
+_NOT_CLOTHING = [
+    "a landscape, sky, or outdoor scene",
+    "a building, street, or architecture",
+    "food or a meal",
+    "a vehicle or transportation",
+    "an animal or pet",
+    "text, a document, or a screen",
+    "furniture or an interior room without people",
+    "nature, plants, or trees",
+    "a blank or solid colour background",
+]
+
+# Combined label set — CLIP picks the single best match across all of them
+_ALL_SCENE_LABELS = _CLOTHING_PRESENT + _NOT_CLOTHING
+
+# Minimum fraction of probability mass that must sit on clothing labels
+# for the image to be considered a valid clothing input.
+# Set conservatively — we want to block obvious non-clothing without
+# impacting any real-world clothing photo.
+CLOTHING_PRESENCE_THRESHOLD = 0.55
+
+
+def contains_clothing(image: Image.Image) -> tuple[bool, float]:
+    """
+    Run a zero-shot CLIP scene classification on the FULL image to check
+    whether clothing is present before running the detection pipeline.
+
+    Returns (is_clothing, clothing_score) where clothing_score is the
+    summed probability across all positive clothing labels.
+
+    Uses the same CLIP model already loaded at startup — no extra inference cost
+    beyond a single forward pass on the resized input image.
+    """
+    # Resize to a fixed size for fast inference — no need for full resolution here
+    thumb = image.copy()
+    thumb.thumbnail((336, 336), Image.LANCZOS)
+
+    inputs = processor(
+        images=thumb,
+        text=_ALL_SCENE_LABELS,
+        return_tensors="pt",
+        padding=True,
+    ).to(device)
+
+    with torch.no_grad():
+        out    = clip(**inputs)
+    logits = out.logits_per_image if hasattr(out, "logits_per_image") else out[0]
+    probs  = logits.softmax(dim=1)[0].cpu().numpy()
+
+    # Sum probability over all positive (clothing) labels
+    n_positive      = len(_CLOTHING_PRESENT)
+    clothing_score  = float(probs[:n_positive].sum())
+    is_clothing     = clothing_score >= CLOTHING_PRESENCE_THRESHOLD
+
+    print(f"  [clothing check] score={clothing_score:.3f} "
+          f"({'PASS' if is_clothing else 'FAIL'}) — "
+          f"top label: '{_ALL_SCENE_LABELS[int(probs.argmax())]}'")
+
+    return is_clothing, round(clothing_score, 3)
+
+
 # ── Detection ─────────────────────────────────────────────────────────────────
 
 def iou(a: list, b: list) -> float:
@@ -212,6 +306,31 @@ def deduplicate_regions(regions: list, iou_threshold: float = 0.30) -> list:
     return kept
 
 
+def is_valid_garment_region(bbox: list, image_w: int, image_h: int) -> bool:
+    """
+    Filter out detections that are almost certainly not garments:
+    1. Too small relative to image — likely noise or face/hand crop
+    2. Entirely in the top quarter of the image — likely hair or head region
+       misidentified as a scarf/hijab by YOLO
+    """
+    x1, y1, x2, y2 = bbox
+    crop_w = x2 - x1
+    crop_h = y2 - y1
+    crop_area  = crop_w * crop_h
+    image_area = image_w * image_h
+
+    # Must cover at least MIN_CROP_AREA_RATIO of the total image
+    if crop_area / image_area < MIN_CROP_AREA_RATIO:
+        return False
+
+    # If the entire bbox sits within the top MAX_HEAD_ZONE_RATIO of the image,
+    # it is almost certainly a head/hair crop, not a garment
+    if y2 < image_h * MAX_HEAD_ZONE_RATIO:
+        return False
+
+    return True
+
+
 def detect_and_classify(image: Image.Image) -> list[dict]:
     W, H    = image.size
     arr     = np.array(image)
@@ -235,9 +354,13 @@ def detect_and_classify(image: Image.Image) -> list[dict]:
                     Image.fromarray((m*255).astype(np.uint8)).resize((W,H), Image.NEAREST)
                 ) > 127
             crop, pmask = mask_to_crop(image, mask_xy, full_mask)
+            bbox = [x1, y1, x2, y2]
+            if not is_valid_garment_region(bbox, W, H):
+                print(f"  [filter] Skipped small/head-zone region {bbox}")
+                continue
             regions.append({
                 "df2_class": yolo.names[int(box.cls[0])],
-                "bbox":      [x1,y1,x2,y2],
+                "bbox":      bbox,
                 "crop":      crop,
                 "mask":      pmask,
             })
@@ -248,30 +371,39 @@ def detect_and_classify(image: Image.Image) -> list[dict]:
     # Remove overlapping duplicate detections before classifying
     regions = deduplicate_regions(regions)
 
-    type_labels   = [t[0] for t in TYPE_MAP]
-    gender_labels = list(GENDER_MAP.keys()) + ["unisex"]
-    fit_labels    = [f[0] for f in FIT_MAP]
-
     items = []
     for i, r in enumerate(regions):
         crop   = r["crop"]
+
+        # Dominant colour via K-means pixel clustering
         colour = dominant_colour(crop, r["mask"])
 
-        ctype,  type_conf   = clip_classify(crop, type_labels)
-        gender, gender_conf = clip_classify(crop, gender_labels)
-        fit,    fit_conf    = clip_classify(crop, fit_labels)
+        # Gender — binary CLIP classification with confidence fallback.
+        # We intentionally skip type/fit CLIP classification here:
+        # Fashion-CLIP misclassifies Eastern garments too often for those
+        # labels to be useful in the query vector. The image embedding
+        # itself carries the visual type signal — we just need gender
+        # to enforce the search filter correctly.
+        gender_raw, gender_conf = clip_classify(crop, GENDER_LABELS)
+        if gender_conf >= GENDER_CONF_MIN:
+            gender = GENDER_LABEL_MAP[gender_raw]
+        else:
+            gender = "unisex"   # low confidence → don't filter by gender
 
-        # Log detected attributes to terminal, not shown on frontend
-        print(f"  Item #{i+1}: class={r['df2_class']} | type={ctype} | colour={colour} | gender={gender} | fit={fit}")
+        df2 = r["df2_class"]
+        print(
+            f"  Item #{i+1}: yolo={df2} | colour={colour} | "
+            f"gender={gender} (conf={gender_conf:.2f}{'*' if gender == 'unisex' else ''})"
+        )
 
         items.append({
             "item_id":        i + 1,
-            "detected_class": r["df2_class"],
+            "detected_class": df2,
             "bbox":           r["bbox"],
-            "type":           ctype,
+            "type":           "unknown",   # not used — image vec drives search
             "colour":         colour,
             "gender":         gender,
-            "fit":            fit,
+            "fit":            "regular",   # not used in new filter
             "_crop":          crop,
         })
 
@@ -300,6 +432,18 @@ async def match(file: UploadFile = File(...)):
 
     image = fix_orientation(Image.open(io.BytesIO(data)).convert("RGB"))
     image = resize_input(image)
+
+    # ── Clothing presence gate ─────────────────────────────────────────────
+    is_clothing, clothing_score = contains_clothing(image)
+    if not is_clothing:
+        return JSONResponse({
+            "item_count":      0,
+            "items":           [],
+            "clothing_found":  False,
+            "clothing_score":  clothing_score,
+            "message":         "No clothing detected in the uploaded image.",
+        })
+
     items = detect_and_classify(image)
 
     output = []
@@ -339,6 +483,9 @@ async def match(file: UploadFile = File(...)):
         })
 
     return JSONResponse({
-        "item_count": len(output),
-        "items":      output,
+        "item_count":     len(output),
+        "items":          output,
+        "clothing_found": True,
+        "clothing_score": clothing_score,
     })
+
