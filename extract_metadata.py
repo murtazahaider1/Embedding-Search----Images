@@ -1,5 +1,5 @@
 """
-extract_metadata.py  v4
+extract_metadata.py  
 
 Rewritten for the Shopify Facebook/Google feed CSV format.
 
@@ -16,7 +16,7 @@ Input dict keys (from the CSV row):
     color:      "Black, " | "Hotpink / Blue, " | nan
     price, sale_price, size, sku, availability, brand, vendor
 
-Compared to v3:
+Compared to previous version:
 - Gender is read directly from custom_label_1 — no keyword scanning needed
 - Category / sub_cat give strong prior for type → less fallback needed
 - Colour is read from the `color` column first, then keyword scan as backup
